@@ -27,9 +27,11 @@ using namespace std;
 //----------------------------------------VALUES----------------------------------------//
 
 
-#define 			CONNECTION_IP				"192.168.0.103"
+#define 			LOCAL_CONNECTION_IP			"192.168.0.103"
+#define				PUBLIC_CONNECTION_IP			"14.139.185.120"
 #define 			CONNECTION_PORT				50005
 #define 			STRING_LENGTH				1024
+#define				USING_LOACL_IP				1
 
 
 
@@ -42,7 +44,8 @@ char				CLIENT_MESSAGE[STRING_LENGTH];
 queue<string> 			SENDING_MESSAGE;
 vector<string>			PREFIX;
 set<string>			ACTIVE_USERS;
-
+bool 				SERVER_STATUS = 			true; // active
+bool				LOGIN_STATUS =				false;
 
 //----------------------------------------VALUES----------------------------------------//
 
@@ -68,7 +71,8 @@ inline void 			cpf_build_received_message(); // feature: /message
 inline void 			cpf_build_sending_message(); // feature: /message
 inline void 			cpf_logout_send(); // feature: /logout
 inline void 			cpf_logout_recv(bool &feedback); // feature: /logout
-
+inline void 			cpf_send_close_server(); // feature: /close_server
+inline void 			cpf_recv_close_server(); // feature: /close_server
 
 //---------------------------------------FUNCTION---------------------------------------//
 
@@ -94,27 +98,23 @@ int main( int argc, char** argv ){
 
 	// Server Info
 	cpf_server_info();
-	// puts("Server Info. Done");
 
 	// Setting Prefixes
 	cpf_set_prefixes();
-	// puts("Set Prefixes. Done");
 
-	// Loggin in message to server
+	// login to server
 	cpf_loggin_in();
-	// puts("Login. Done");
 
 	// Client Sending Message
 	std::thread sending_thread(cpf_sending);
-	// puts("sending_thread. Done");
 
 	// Client Receiving Message
 	std::thread receiving_thread(cpf_receiving);
-	// puts("receiving_thread. Done");
 
 	//  wait for both thread to finish
 	sending_thread.join();
 	receiving_thread.join();
+
 
 
 	return 0;
@@ -161,9 +161,13 @@ inline void			cpf_server_info(){
 
 	memset( &SERVER_INFO, 0, sizeof(SERVER_INFO));
 
-	SERVER_INFO.sin_family			=		AF_INET; 			// IPv4
-	SERVER_INFO.sin_addr.s_addr     =       inet_addr( CONNECTION_IP );	// INADDR_ANY
-	SERVER_INFO.sin_port			=		htons( CONNECTION_PORT );
+	SERVER_INFO.sin_family		=	AF_INET; 		// IPv4
+	if(USING_LOACL_IP)
+		SERVER_INFO.sin_addr.s_addr     =       inet_addr( LOCAL_CONNECTION_IP ); // INADDR_ANY
+	else
+		SERVER_INFO.sin_addr.s_addr     =       inet_addr( PUBLIC_CONNECTION_IP ); // INADDR_ANY
+
+	SERVER_INFO.sin_port		=		htons( CONNECTION_PORT );
 }
 
 
@@ -205,6 +209,13 @@ inline void			cpf_recv_message(){
 
 
 inline void			cpf_send_message(string &content_s){
+
+	// check if server is live or not
+	// if( !SERVER_STATUS ){ // SERVER_STATUS == 0 -> server inactive
+	// 	puts( "Couldn't send message. Server is not LIVE." );
+	// 	return;
+	// }
+
 	int send_feedback = sendto(
 					SOCKET_DESCRIPTOR,
 					content_s.c_str(),
@@ -232,13 +243,15 @@ inline void			cpf_set_prefixes(){
 	PREFIX.clear();
 
 	// Set the prefix values
-	PREFIX.push_back("/help"); 				// Index 0 : working of program
+	PREFIX.push_back("/help"); 			// Index 0 : working of program
 	PREFIX.push_back("/keepalive"); 		// Index 1 : keep alive connection
 	PREFIX.push_back("/login"); 			// Index 2 : loggin in to server
 	PREFIX.push_back("/active_user"); 		// Index 3 : active user id
 	PREFIX.push_back("/message"); 			// Index 4 : sending message
 	PREFIX.push_back("/logout");			// Index 5 : user closing
-	PREFIX.push_back("/reply"); 			// Index 6 : reply to recent ID
+	PREFIX.push_back("/close_server");		// Index 6 : server closing
+	PREFIX.push_back("/exit");			// Index 7 : exit a thread
+	PREFIX.push_back("/reply"); 			// Index 8 : reply to recent ID
 }
 
 
@@ -273,6 +286,10 @@ inline void			cpf_loggin_in(){
 			break;
 	}
 
+	puts( "login successful" );
+
+	puts("\n\n---------------------------------------------------------------------\n");
+
 	if(ACTIVE_USERS.size()){
 
 		puts( "ACTIVE USERS:" );
@@ -284,6 +301,7 @@ inline void			cpf_loggin_in(){
 	else{
 		puts( "No Active User");
 	}
+	puts("\n---------------------------------------------------------------------\n\n");
 }
 
 
@@ -330,11 +348,15 @@ inline void			cpf_segment_message(char* msg, queue<string> &que){
 
 
 inline void			cpf_sending(){
-	while(true){
+
+	while( true ){ // SERVER_STATUS == 1 -> active
 
 		fgets( CLIENT_MESSAGE, sizeof(CLIENT_MESSAGE), stdin);
 		cpf_segment_message( CLIENT_MESSAGE , SENDING_MESSAGE );
 		memset( CLIENT_MESSAGE, 0, sizeof( CLIENT_MESSAGE ));
+
+
+
 
 		if( (SENDING_MESSAGE.front()).find(PREFIX[0]) == 0){ 			// cpf_help
 
@@ -369,11 +391,25 @@ inline void			cpf_sending(){
 			return;
 		}
 
-		// reply
+		// close server
 		else if( (SENDING_MESSAGE.front()).find(PREFIX[6]) == 0){
 
-			puts("Upcoming Feature: you can reply to recent interaction");
+			// SENDING_MESSAGE: /close_server <server_key>
+			cpf_send_close_server();
 		}
+
+		// exit
+		else if( (SENDING_MESSAGE.front()).find(PREFIX[7]) == 0){
+
+			// SENDING_MESSAGE : /exit
+			SENDING_MESSAGE.pop();
+
+			puts("Sending is not be possible anymore...");
+			return;
+		}
+
+		// reply
+
 
 	}
 }
@@ -388,10 +424,12 @@ inline void			cpf_sending(){
 
 inline void			cpf_receiving(){
 	while(true){
+
 		// receiving message
 		cpf_recv_message();
 
-		if( (RECEIVED_MESSAGE.front()).find(PREFIX[2]) == 0 ){ 					// login
+		// PREFIX[2] = "/login"
+		if( (RECEIVED_MESSAGE.front()).find(PREFIX[2]) == 0 ){
 
 			// format: /login <user_id>
 			RECEIVED_MESSAGE.pop();
@@ -426,6 +464,26 @@ inline void			cpf_receiving(){
 			// if feedback == true client should be Closing
 			if( feedback == true )
 				return;
+		}
+
+		// PREFIX[6] = "/close_server"
+		else if( (RECEIVED_MESSAGE.front()).find(PREFIX[6]) == 0){
+
+			// RECEIVED_MESSAGE: /close_server <user_id>
+			cpf_recv_close_server();
+
+			return;
+		}
+
+		// PREFIX[7] = "/exit"
+		else if( (RECEIVED_MESSAGE.front()).find(PREFIX[7]) == 0){
+
+			// RECEIVED_MESSAGE: /close_server <user_id>
+			RECEIVED_MESSAGE.pop();
+
+			puts("Receiving message is no more possible...");
+
+			return;
 		}
 	}
 }
@@ -545,7 +603,7 @@ inline void 			cpf_logout_recv(bool &feedback){ // feature: /logout
 	if( feedback == true )
 		return;
 
-	string msg = "User [ " + RECEIVED_MESSAGE.front() + " ] is now Inactive";
+	string msg = "[ " + RECEIVED_MESSAGE.front() + " ] is now Inactive";
 	puts( msg.c_str() );
 
 	// remove the user_id from ACTIVE_USERS lits if found
@@ -560,3 +618,51 @@ inline void 			cpf_logout_recv(bool &feedback){ // feature: /logout
 
 
 //------------------------------------FEATURE LOGOUT------------------------------------//
+
+
+
+//--------------------------------FEATURE CLOSING SERVER--------------------------------//
+
+inline void 			cpf_send_close_server(){
+
+	// SENDING_MESSAGE: /close_server <server_key>
+	SENDING_MESSAGE.pop();
+
+	// SENDING_MESSAGE: <server_key>
+	string msg = PREFIX[6] + " " + USER_ID + " " + SENDING_MESSAGE.front()+"\n";
+	// msg = /close_server <user_id> <server_key>
+
+	// empty SENDING_MESSAGE
+	SENDING_MESSAGE.pop();
+
+	// Send the message
+	cpf_send_message(msg);
+}
+
+
+//--------------------------------------------------------------------------------------//
+
+
+inline void 			cpf_recv_close_server(){
+
+	// RECEIVED_MESSAGE: /close_server <user_id>
+	RECEIVED_MESSAGE.pop();
+
+	// RECEIVED_MESSAGE: <user_id>
+	// check for user_id
+	if( RECEIVED_MESSAGE.front() != USER_ID ){
+
+		// print who closed the server
+		puts(("Server closing soon... Closed by [ " + RECEIVED_MESSAGE.front() + " ].").c_str());
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+		puts("Please close your client by using /exit");
+	}
+	else{
+		puts( "Server closing soon..." );
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+		puts("Please close your client by using /exit");
+	}
+}
+
+
+//--------------------------------FEATURE CLOSING SERVER--------------------------------//

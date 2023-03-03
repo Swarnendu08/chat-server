@@ -27,9 +27,11 @@ using namespace std;
 //----------------------------------------VALUES----------------------------------------//
 
 
-#define 			CONNECTION_IP				"192.168.0.103"
+#define 			LOCAL_CONNECTION_IP			"192.168.0.103"
+#define				PUBLIC_CONNECTION_IP			INADDR_ANY
 #define 			CONNECTION_PORT				50005
 #define 			STRING_LENGTH				1024
+#define				USING_LOACL_IP				1
 
 
 
@@ -40,6 +42,8 @@ queue<string> 			RECEIVED_MESSAGE;
 string 				SEND_MESSAGE =				"";
 int				READ_SIZE = 				0;
 vector<string>			PREFIX;
+
+
 
 struct  			sockaddr_in 				server_info;
 struct 				sockaddr_in				client_info;
@@ -69,6 +73,8 @@ inline void 			spf_segment_message();
 inline void 			spf_login();
 inline void 			spf_client_to_client_messaging();
 inline void 			spf_logout(); // feature: /logout
+inline void 			spf_close_server(bool &feedback); // feature: /close_server
+
 
 //---------------------------------------FUNCTIONS--------------------------------------//
 
@@ -105,8 +111,10 @@ int main( int argc, char** argv ){ 	// argc: argument count, argv: argument valu
 
 
 	// Printing Server Info
-	printf( "Server Listening @ IP: [ %s ]  and Port: [ %d ]\n", CONNECTION_IP, CONNECTION_PORT );
-
+	if( USING_LOACL_IP )
+		printf( "Server Listening @ Local IP: [ %s ]  and Port: [ %d ].\n", LOCAL_CONNECTION_IP , CONNECTION_PORT );
+	else
+		printf( "Server Listening @ Public IP: [ %s ]  and Port: [ %d ].\n", "0.0.0.0" , CONNECTION_PORT );
 
 	// Communication
 	spf_communication();
@@ -167,7 +175,12 @@ inline void                     spf_server_info(){
 	memset( &server_info, 0, sizeof( server_info ) );
 
 	server_info.sin_family		=	AF_INET; 			// IPv4
-	server_info.sin_addr.s_addr     =       inet_addr( CONNECTION_IP );	// INADDR_ANY
+
+	if(USING_LOACL_IP)
+		server_info.sin_addr.s_addr     =       inet_addr( LOCAL_CONNECTION_IP );	// INADDR_ANY
+	else
+		server_info.sin_addr.s_addr     =       htonl( PUBLIC_CONNECTION_IP );	// INADDR_ANY
+
 	server_info.sin_port		=	htons( CONNECTION_PORT );
 }
 
@@ -255,6 +268,7 @@ inline void 		spf_set_prefixes(){
 	PREFIX.push_back("/active_user");		// Index 3: active users
 	PREFIX.push_back("/message");			// Index 4: send message
 	PREFIX.push_back("/logout");			// Index 5: client logging out
+	PREFIX.push_back("/close_server");		// Index 6: for server closing
 }
 
 
@@ -294,17 +308,20 @@ inline void                     spf_communication(){
 
 
 		// here we figure out what the message contains
-		if( (RECEIVED_MESSAGE.front()).find(PREFIX[2]) == 0 ){ 					// login
+
+		// PREFIX[2] = "/login"
+		if( (RECEIVED_MESSAGE.front()).find(PREFIX[2]) == 0 ){
 
 			RECEIVED_MESSAGE.pop();
 			spf_login();
 		}
-		else if( (RECEIVED_MESSAGE.front()).find(PREFIX[4]) == 0){					// message
+
+		// PREFIX[4] = "/message"
+		else if( (RECEIVED_MESSAGE.front()).find(PREFIX[4]) == 0){
 
 			//format: /message <sender ID> <receiver ID> message
 			RECEIVED_MESSAGE.pop();
 			spf_client_to_client_messaging();
-
 		}
 
 		// PREFIX[5] = "/logout"
@@ -312,6 +329,22 @@ inline void                     spf_communication(){
 
 			// RECEIVED_MESSAGE = /logout <user_id>
 			spf_logout();
+		}
+
+		// PREFIX[6] = ""/close_server"
+		else if( (RECEIVED_MESSAGE.front()).find(PREFIX[6]) == 0 ){
+
+			// RECEIVED_MESSAGE = /close_server <user_id> <server_key>
+			bool feedback = false;
+			spf_close_server(feedback);
+
+			if( feedback ){
+				puts( "Server is closing..." );
+
+				// wait 5 seconds
+				std::this_thread::sleep_for(std::chrono::seconds(5));
+				break;
+			}
 		}
 	}
 }
@@ -374,6 +407,7 @@ inline void			spf_login(){
 	string reply_msg = "";
 
 	for(auto const&[user_id, user_addr] : ACTIVE_USERS){
+
 		struct sockaddr_in dest_host = user_addr;
 		spf_message_send(dest_host, content_s);
 
@@ -489,3 +523,53 @@ inline void 			spf_logout(){
 
 
 //------------------------------------FEATURE LOGOUT------------------------------------//
+
+
+
+//---------------------------------FEATURE SERVER CLOSE---------------------------------//
+
+
+inline void 			spf_close_server(bool &feedback){
+
+	// RECEIVED_MESSAGE: /close_server <sender_id> <server_key>
+	RECEIVED_MESSAGE.pop();
+
+	// store sender_id
+	// RECEIVED_MESSAGE: <sender_id> <server_key>
+	string sender_id = RECEIVED_MESSAGE.front();
+
+	// RECEIVED_MESSAGE: <server_key>
+	RECEIVED_MESSAGE.pop();
+
+
+	// check wheather server_key matches
+	if( RECEIVED_MESSAGE.front() == SERVER_KEY ){
+
+		// user verified
+		string msg = PREFIX[6] + " " + sender_id + "\n";
+		// msg = /close_server <sender_id>
+
+		puts(("Server is closing by user: [ " + sender_id + "]").c_str());
+
+		// broadcast the update
+		for( auto const&[user_id, user_addr]: ACTIVE_USERS){
+
+			struct sockaddr_in dest_host = user_addr;
+			spf_message_send(dest_host, msg);
+		}
+
+		feedback = true;
+	}
+	else{
+
+		// if server_key doesnot matches
+		puts(("Failed attempt to close server by user: [ " + sender_id + " ]").c_str());
+
+		// Upcoming feature: Blocking
+		// if a particular client takes more than 4 chance to server close
+		// he will be blocked
+	}
+}
+
+
+//---------------------------------FEATURE SERVER CLOSE---------------------------------//
